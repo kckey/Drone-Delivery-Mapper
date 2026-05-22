@@ -10,8 +10,8 @@ final class MapViewDelegate: NSObject, MKMapViewDelegate {
         guard let line = overlay as? MKPolyline else { return MKOverlayRenderer(overlay: overlay) }
 
         let renderer = MKPolylineRenderer(polyline: line)
-        renderer.strokeColor = .systemBlue
-        renderer.lineWidth = 3
+        renderer.strokeColor = UIColor(red: 0.68, green: 0.39, blue: 0.18, alpha: 1)
+        renderer.lineWidth = 4
         renderer.lineCap = .round
         renderer.lineJoin = .round
         return renderer
@@ -32,14 +32,14 @@ final class MapViewDelegate: NSObject, MKMapViewDelegate {
 
         let title = annotation.title ?? ""
         switch title {
-        case "Store":
-            view.markerTintColor = .systemGreen
+        case "Dispatch Hub":
+            view.markerTintColor = UIColor(red: 0.39, green: 0.55, blue: 0.35, alpha: 1)
             view.glyphImage = UIImage(systemName: "shippingbox.fill")
-        case "Destination":
-            view.markerTintColor = .systemBlue
+        case "Drop Zone":
+            view.markerTintColor = UIColor(red: 0.68, green: 0.39, blue: 0.18, alpha: 1)
             view.glyphImage = UIImage(systemName: "mappin.circle.fill")
         case "Drone":
-            view.markerTintColor = .systemOrange
+            view.markerTintColor = UIColor(red: 0.84, green: 0.52, blue: 0.22, alpha: 1)
             view.glyphImage = UIImage(systemName: "paperplane")
         default:
             view.markerTintColor = .systemGray

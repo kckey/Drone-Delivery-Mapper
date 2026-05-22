@@ -8,30 +8,41 @@ import MapKit
 
 final class ViewController: UIViewController {
 
-    // MARK: UI Elements
+    private enum Theme {
+        static let sand = UIColor(red: 0.95, green: 0.89, blue: 0.78, alpha: 1)
+        static let parchment = UIColor(red: 0.99, green: 0.96, blue: 0.89, alpha: 1)
+        static let panel = UIColor(red: 0.98, green: 0.93, blue: 0.83, alpha: 0.96)
+        static let line = UIColor(red: 0.75, green: 0.63, blue: 0.44, alpha: 1)
+        static let ink = UIColor(red: 0.20, green: 0.15, blue: 0.10, alpha: 1)
+        static let muted = UIColor(red: 0.43, green: 0.35, blue: 0.25, alpha: 1)
+        static let clay = UIColor(red: 0.68, green: 0.39, blue: 0.18, alpha: 1)
+        static let clayDark = UIColor(red: 0.43, green: 0.23, blue: 0.11, alpha: 1)
+        static let sage = UIColor(red: 0.39, green: 0.55, blue: 0.35, alpha: 1)
+    }
+
     private let map = MKMapView()
-    private let cardView = UIView()
-
-    // Modern card background + chrome
-    private let cardBlurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
-    private let cardContentView = UIView()
-    private let cardHandle = UIView()
-
+    private let controlPanel = UIView()
+    private let panelStack = UIStackView()
     private let instructionLabel = UILabel()
     private let statusLabel = UILabel()
     private let detailLabel = UILabel()
+    private let etaValueLabel = UILabel()
+    private let rangeValueLabel = UILabel()
+    private let conditionValueLabel = UILabel()
+    private let progressView = UIProgressView(progressViewStyle: .bar)
     private let confirmButton = UIButton(type: .system)
     private let returnButton = UIButton(type: .system)
     private let zoomStack = UIStackView()
 
-    // MARK: Managers & State
     private let locationManager = CLLocationManager()
     private var drone = Drone(start: Constants.storeCoordinate)
     private let deliveryService = DeliveryService()
-    private var destination: CLLocationCoordinate2D?
     private let mapDelegate = MapViewDelegate()
+    private var destination: CLLocationCoordinate2D?
+    private var destinationAnnotation: MKPointAnnotation?
     private var droneAnnotation: MKPointAnnotation?
-    private var flightStartCoordinate: CLLocationCoordinate2D?
+    private var routeOverlay: MKOverlay?
+    private var flightStartCoordinate = Constants.storeCoordinate
 
     private lazy var etaFormatter: DateComponentsFormatter = {
         let formatter = DateComponentsFormatter()
@@ -40,293 +51,289 @@ final class ViewController: UIViewController {
         return formatter
     }()
 
-    // MARK: Life-cycle
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
         map.delegate = mapDelegate
         addStoreAnnotation()
+        placeDroneAnnotation(at: Constants.storeCoordinate)
+        centerMap(on: Constants.storeCoordinate)
         requestLocationPermission()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        // Keep the card padded above the device’s home indicator.
-        let bottomInset = max(view.safeAreaInsets.bottom, 12)
-        cardView.layoutMargins = UIEdgeInsets(top: 18, left: 18, bottom: bottomInset + 10, right: 18)
-
-        // keep shadow path up to date for smooth scrolling/perf
-        cardView.layer.shadowPath = UIBezierPath(roundedRect: cardView.bounds, cornerRadius: 24).cgPath
+        controlPanel.layer.shadowPath = UIBezierPath(
+            roundedRect: controlPanel.bounds,
+            cornerRadius: 22
+        ).cgPath
     }
 
-    // MARK: UI helpers ------------------------------------------------------
     private func setupUI() {
-        view.backgroundColor = .systemBackground
-        map.translatesAutoresizingMaskIntoConstraints = false
-        cardView.translatesAutoresizingMaskIntoConstraints = false
+        view.backgroundColor = Theme.sand
+        setupMap()
+        setupPanel()
+        setupZoomControls()
 
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleMapTap(_:)))
+        map.addGestureRecognizer(tap)
+    }
+
+    private func setupMap() {
+        map.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(map)
-        view.addSubview(cardView)
 
         if #available(iOS 16.0, *) {
-            let config = MKStandardMapConfiguration(elevationStyle: .realistic, emphasisStyle: .muted)
-            map.preferredConfiguration = config
+            let configuration = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
+            configuration.pointOfInterestFilter = .excludingAll
+            map.preferredConfiguration = configuration
         } else {
             map.mapType = .mutedStandard
+            map.pointOfInterestFilter = .excludingAll
         }
-        map.overrideUserInterfaceStyle = .dark
+
+        map.overrideUserInterfaceStyle = .light
         map.showsCompass = false
-        map.showsScale = false
-        map.pointOfInterestFilter = .excludingAll
+        map.showsScale = true
         map.isRotateEnabled = false
-
-        // --- Modern card styling (material + subtle border + floating shadow) ---
-        cardView.backgroundColor = .clear
-        cardView.layer.cornerRadius = 24
-        cardView.layer.cornerCurve = .continuous
-        cardView.layer.masksToBounds = false
-
-        // Floating shadow
-        cardView.layer.shadowColor = UIColor.black.cgColor
-        cardView.layer.shadowOpacity = 0.22
-        cardView.layer.shadowRadius = 24
-        cardView.layer.shadowOffset = CGSize(width: 0, height: 10)
-
-        // Hairline border
-        cardView.layer.borderWidth = 1
-        cardView.layer.borderColor = UIColor.white.withAlphaComponent(0.16).cgColor
-
-        // Blur background clipped to corners
-        cardBlurView.translatesAutoresizingMaskIntoConstraints = false
-        cardBlurView.layer.cornerRadius = 24
-        cardBlurView.layer.cornerCurve = .continuous
-        cardBlurView.clipsToBounds = true
-        cardView.addSubview(cardBlurView)
-
-        NSLayoutConstraint.activate([
-            cardBlurView.topAnchor.constraint(equalTo: cardView.topAnchor),
-            cardBlurView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor),
-            cardBlurView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor),
-            cardBlurView.bottomAnchor.constraint(equalTo: cardView.bottomAnchor)
-        ])
-
-        // Optional handle for polish
-        cardHandle.translatesAutoresizingMaskIntoConstraints = false
-        cardHandle.backgroundColor = UIColor.white.withAlphaComponent(0.25)
-        cardHandle.layer.cornerRadius = 2.5
-        cardBlurView.contentView.addSubview(cardHandle)
-
-        NSLayoutConstraint.activate([
-            cardHandle.topAnchor.constraint(equalTo: cardBlurView.contentView.topAnchor, constant: 10),
-            cardHandle.centerXAnchor.constraint(equalTo: cardBlurView.contentView.centerXAnchor),
-            cardHandle.widthAnchor.constraint(equalToConstant: 38),
-            cardHandle.heightAnchor.constraint(equalToConstant: 5)
-        ])
-
-        // Content container
-        cardContentView.translatesAutoresizingMaskIntoConstraints = false
-        cardBlurView.contentView.addSubview(cardContentView)
-
-        NSLayoutConstraint.activate([
-            cardContentView.topAnchor.constraint(equalTo: cardBlurView.contentView.topAnchor),
-            cardContentView.leadingAnchor.constraint(equalTo: cardBlurView.contentView.leadingAnchor),
-            cardContentView.trailingAnchor.constraint(equalTo: cardBlurView.contentView.trailingAnchor),
-            cardContentView.bottomAnchor.constraint(equalTo: cardBlurView.contentView.bottomAnchor)
-        ])
 
         NSLayoutConstraint.activate([
             map.topAnchor.constraint(equalTo: view.topAnchor),
             map.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             map.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            map.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
-            cardView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
-            cardView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            cardView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
+            map.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
-        let cardTop = cardView.topAnchor.constraint(greaterThanOrEqualTo: view.centerYAnchor, constant: -24)
-        cardTop.priority = .defaultHigh
-        cardTop.isActive = true
+    }
 
-        // Buttons row
-        let buttonsRow = UIStackView(arrangedSubviews: [confirmButton, returnButton])
-        buttonsRow.axis = .horizontal
-        buttonsRow.spacing = 10
+    private func setupPanel() {
+        controlPanel.translatesAutoresizingMaskIntoConstraints = false
+        controlPanel.backgroundColor = Theme.panel
+        controlPanel.layer.cornerRadius = 22
+        controlPanel.layer.cornerCurve = .continuous
+        controlPanel.layer.borderWidth = 1
+        controlPanel.layer.borderColor = Theme.line.withAlphaComponent(0.45).cgColor
+        controlPanel.layer.shadowColor = UIColor.black.cgColor
+        controlPanel.layer.shadowOpacity = 0.18
+        controlPanel.layer.shadowRadius = 18
+        controlPanel.layer.shadowOffset = CGSize(width: 0, height: 10)
+        view.addSubview(controlPanel)
 
-        // ✅ Key fix: allow uneven widths so long title fits
-        buttonsRow.distribution = .fillProportionally
-
-        // Main stack (same structure/ordering as before)
-        let stack = UIStackView(arrangedSubviews: [instructionLabel, statusLabel, detailLabel, buttonsRow])
-        stack.axis = .vertical
-        stack.spacing = 10
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        cardContentView.addSubview(stack)
-
-        cardView.layoutMargins = UIEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: cardView.layoutMarginsGuide.topAnchor, constant: 10), // room for handle
-            stack.leadingAnchor.constraint(equalTo: cardView.layoutMarginsGuide.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: cardView.layoutMarginsGuide.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: cardView.layoutMarginsGuide.bottomAnchor)
+            controlPanel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
+            controlPanel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
+            controlPanel.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
         ])
 
-        // Labels (modern hierarchy)
-        instructionLabel.text = "Tap anywhere on the map to drop a pin."
-        instructionLabel.font = .preferredFont(forTextStyle: .footnote)
-        instructionLabel.textColor = UIColor.white.withAlphaComponent(0.78)
+        panelStack.axis = .vertical
+        panelStack.spacing = 12
+        panelStack.translatesAutoresizingMaskIntoConstraints = false
+        controlPanel.addSubview(panelStack)
 
-        statusLabel.font = .preferredFont(forTextStyle: .title3)
-        statusLabel.text = "Choose a destination to check availability."
+        NSLayoutConstraint.activate([
+            panelStack.topAnchor.constraint(equalTo: controlPanel.topAnchor, constant: 18),
+            panelStack.leadingAnchor.constraint(equalTo: controlPanel.leadingAnchor, constant: 18),
+            panelStack.trailingAnchor.constraint(equalTo: controlPanel.trailingAnchor, constant: -18),
+            panelStack.bottomAnchor.constraint(equalTo: controlPanel.bottomAnchor, constant: -18)
+        ])
+
+        let header = makeHeader()
+        let metrics = makeMetricsGrid()
+        let buttonRow = makeButtonRow()
+
+        panelStack.addArrangedSubview(header)
+        panelStack.addArrangedSubview(progressView)
+        panelStack.addArrangedSubview(metrics)
+        panelStack.addArrangedSubview(buttonRow)
+
+        progressView.progress = 0
+        progressView.trackTintColor = Theme.line.withAlphaComponent(0.22)
+        progressView.progressTintColor = Theme.clay
+        progressView.layer.cornerRadius = 3
+        progressView.clipsToBounds = true
+
+        setConfirmButtonEnabled(false)
+        setReturnButtonEnabled(false)
+        updateStatus(
+            primary: "Select a delivery point",
+            detail: "Tap the map to simulate a real-time drone delivery update.",
+            eta: "--",
+            range: "Awaiting route",
+            condition: "Preflight idle"
+        )
+    }
+
+    private func makeHeader() -> UIView {
+        let container = UIView()
+
+        instructionLabel.text = "Drone Delivery Operations"
+        instructionLabel.font = .preferredFont(forTextStyle: .footnote)
+        instructionLabel.textColor = Theme.muted
+
+        statusLabel.font = .preferredFont(forTextStyle: .title2)
+        statusLabel.adjustsFontForContentSizeCategory = true
+        statusLabel.textColor = Theme.ink
         statusLabel.numberOfLines = 0
-        statusLabel.textAlignment = .left
-        statusLabel.textColor = .white
 
         detailLabel.font = .preferredFont(forTextStyle: .callout)
-        detailLabel.textColor = UIColor.white.withAlphaComponent(0.85)
+        detailLabel.adjustsFontForContentSizeCategory = true
+        detailLabel.textColor = Theme.muted
         detailLabel.numberOfLines = 0
 
-        // Helper to keep button titles on one line + shrink if needed
-        func tuneButtonTitle(_ button: UIButton) {
-            button.titleLabel?.numberOfLines = 1
-            button.titleLabel?.lineBreakMode = .byClipping
-            button.titleLabel?.adjustsFontSizeToFitWidth = true
-            button.titleLabel?.minimumScaleFactor = 0.75
-        }
+        let stack = UIStackView(arrangedSubviews: [instructionLabel, statusLabel, detailLabel])
+        stack.axis = .vertical
+        stack.spacing = 5
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
 
-        // Buttons (same actions/behavior, updated look)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+
+        return container
+    }
+
+    private func makeMetricsGrid() -> UIView {
+        let row = UIStackView(arrangedSubviews: [
+            makeMetric(title: "ETA", valueLabel: etaValueLabel),
+            makeMetric(title: "Range", valueLabel: rangeValueLabel),
+            makeMetric(title: "Condition", valueLabel: conditionValueLabel)
+        ])
+        row.axis = .horizontal
+        row.spacing = 8
+        row.distribution = .fillEqually
+        return row
+    }
+
+    private func makeMetric(title: String, valueLabel: UILabel) -> UIView {
+        let card = UIView()
+        card.backgroundColor = Theme.parchment
+        card.layer.cornerRadius = 12
+        card.layer.borderWidth = 1
+        card.layer.borderColor = Theme.line.withAlphaComponent(0.25).cgColor
+
+        let titleLabel = UILabel()
+        titleLabel.text = title
+        titleLabel.font = .preferredFont(forTextStyle: .caption2)
+        titleLabel.textColor = Theme.muted
+
+        valueLabel.font = .preferredFont(forTextStyle: .caption1)
+        valueLabel.textColor = Theme.ink
+        valueLabel.numberOfLines = 1
+        valueLabel.adjustsFontSizeToFitWidth = true
+        valueLabel.minimumScaleFactor = 0.7
+
+        let stack = UIStackView(arrangedSubviews: [titleLabel, valueLabel])
+        stack.axis = .vertical
+        stack.spacing = 3
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10)
+        ])
+
+        return card
+    }
+
+    private func makeButtonRow() -> UIView {
+        stylePrimaryButton(confirmButton, title: "Start Delivery", symbol: "paperplane.fill")
+        styleSecondaryButton(returnButton, title: "Return Base", symbol: "arrow.uturn.backward.circle.fill")
+
+        confirmButton.addTarget(self, action: #selector(confirmDropoff), for: .touchUpInside)
+        returnButton.addTarget(self, action: #selector(returnToBase), for: .touchUpInside)
+
+        let row = UIStackView(arrangedSubviews: [confirmButton, returnButton])
+        row.axis = .horizontal
+        row.spacing = 10
+        row.distribution = .fillEqually
+        return row
+    }
+
+    private func stylePrimaryButton(_ button: UIButton, title: String, symbol: String) {
         if #available(iOS 15.0, *) {
             var config = UIButton.Configuration.filled()
-            config.title = "Confirm Drop-Off"
-            config.image = UIImage(systemName: "paperplane.fill")
-            config.imagePadding = 6
-            config.cornerStyle = .capsule
-
-            // Modern insets so text/icon aren't cramped
-            config.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
-
-            config.baseBackgroundColor = UIColor.systemCyan.withAlphaComponent(0.95)
-            config.baseForegroundColor = .black
-            confirmButton.configuration = config
+            config.title = title
+            config.image = UIImage(systemName: symbol)
+            config.imagePadding = 7
+            config.cornerStyle = .medium
+            config.contentInsets = NSDirectionalEdgeInsets(top: 13, leading: 14, bottom: 13, trailing: 14)
+            config.baseBackgroundColor = Theme.clay
+            config.baseForegroundColor = .white
+            button.configuration = config
         } else {
-            confirmButton.setTitle("Confirm Drop-Off", for: .normal)
-            confirmButton.backgroundColor = .systemBlue
-            confirmButton.setTitleColor(.white, for: .normal)
-            confirmButton.layer.cornerRadius = 12
-            confirmButton.contentEdgeInsets = UIEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
+            button.setTitle(title, for: .normal)
+            button.backgroundColor = Theme.clay
+            button.setTitleColor(.white, for: .normal)
+            button.layer.cornerRadius = 12
         }
+    }
 
-        // Slightly more compact height (still tappable)
-        confirmButton.heightAnchor.constraint(equalToConstant: 40).isActive = true
-        confirmButton.titleLabel?.font = .preferredFont(forTextStyle: .callout)
-        tuneButtonTitle(confirmButton)
-        confirmButton.addTarget(self, action: #selector(confirmDropoff), for: .touchUpInside)
-        setConfirmButtonEnabled(false)
-
+    private func styleSecondaryButton(_ button: UIButton, title: String, symbol: String) {
         if #available(iOS 15.0, *) {
             var config = UIButton.Configuration.tinted()
-            config.title = "Return"
-            config.image = UIImage(systemName: "arrow.uturn.backward.circle.fill")
-            config.imagePadding = 6
-            config.cornerStyle = .capsule
-            config.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
-            config.baseBackgroundColor = UIColor.white.withAlphaComponent(0.14)
-            config.baseForegroundColor = .white
-            returnButton.configuration = config
+            config.title = title
+            config.image = UIImage(systemName: symbol)
+            config.imagePadding = 7
+            config.cornerStyle = .medium
+            config.contentInsets = NSDirectionalEdgeInsets(top: 13, leading: 14, bottom: 13, trailing: 14)
+            config.baseBackgroundColor = Theme.line.withAlphaComponent(0.18)
+            config.baseForegroundColor = Theme.clayDark
+            button.configuration = config
         } else {
-            returnButton.setTitle("Return", for: .normal)
-            returnButton.tintColor = .systemOrange
+            button.setTitle(title, for: .normal)
+            button.tintColor = Theme.clayDark
         }
-        returnButton.heightAnchor.constraint(equalToConstant: 40).isActive = true
-        returnButton.titleLabel?.font = .preferredFont(forTextStyle: .callout)
-        tuneButtonTitle(returnButton)
-        returnButton.addTarget(self, action: #selector(returnToBase), for: .touchUpInside)
-        setReturnButtonEnabled(false)
-
-        // ✅ Encourage "Return" to stay smaller, and "Confirm" to take extra space
-        returnButton.setContentHuggingPriority(.required, for: .horizontal)
-        returnButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        confirmButton.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        confirmButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        setupZoomControls()
-
-        // Make the map tappable
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleMapTap(_:)))
-        map.addGestureRecognizer(tap)
-
-        centerMap(on: Constants.storeCoordinate)
-        placeDroneAnnotation(at: Constants.storeCoordinate)
     }
 
     private func setConfirmButtonEnabled(_ enabled: Bool) {
         confirmButton.isEnabled = enabled
-        confirmButton.alpha = enabled ? 1 : 0.5
+        confirmButton.alpha = enabled ? 1 : 0.45
     }
 
     private func setReturnButtonEnabled(_ enabled: Bool) {
         returnButton.isEnabled = enabled
-        returnButton.alpha = enabled ? 1 : 0.4
+        returnButton.alpha = enabled ? 1 : 0.45
     }
 
-    private func updateStatus(primary: String, detail: String?) {
+    private func updateStatus(primary: String, detail: String?, eta: String? = nil, range: String? = nil, condition: String? = nil) {
         statusLabel.text = primary
         detailLabel.text = detail
+        if let eta {
+            etaValueLabel.text = eta
+        }
+        if let range {
+            rangeValueLabel.text = range
+        }
+        if let condition {
+            conditionValueLabel.text = condition
+        }
     }
 
     private func centerMap(on coordinate: CLLocationCoordinate2D, radius: CLLocationDistance = 1_500) {
-        let region = MKCoordinateRegion(center: coordinate,
-                                        latitudinalMeters: radius,
-                                        longitudinalMeters: radius)
-        map.setRegion(region, animated: false)
+        map.setRegion(
+            MKCoordinateRegion(center: coordinate, latitudinalMeters: radius, longitudinalMeters: radius),
+            animated: false
+        )
     }
 
-    private func zoomMapToInclude(_ destination: CLLocationCoordinate2D) {
-        var coordinates = [Constants.storeCoordinate, destination]
-        let polyline = MKPolyline(coordinates: &coordinates, count: coordinates.count)
-        let paddedRect = map.mapRectThatFits(polyline.boundingMapRect,
-                                             edgePadding: UIEdgeInsets(top: 60, left: 40, bottom: 260, right: 40))
-        map.setVisibleMapRect(paddedRect, animated: true)
+    private func zoomMapToInclude(_ coordinate: CLLocationCoordinate2D) {
+        let line = MKGeodesicPolyline(coordinates: [Constants.storeCoordinate, coordinate], count: 2)
+        let padded = map.mapRectThatFits(
+            line.boundingMapRect,
+            edgePadding: UIEdgeInsets(top: 80, left: 36, bottom: 285, right: 36)
+        )
+        map.setVisibleMapRect(padded, animated: true)
     }
 
-    // MARK: Map – add store marker -----------------------------------------
-    private func addStoreAnnotation() {
-        let ann = MKPointAnnotation()
-        ann.coordinate = Constants.storeCoordinate
-        ann.title = "Store"
-        map.addAnnotation(ann)
-    }
-
-    private func placeDroneAnnotation(at coordinate: CLLocationCoordinate2D) {
-        if let droneAnnotation = droneAnnotation {
-            droneAnnotation.coordinate = coordinate
-        } else {
-            let annotation = MKPointAnnotation()
-            annotation.coordinate = coordinate
-            annotation.title = "Drone"
-            droneAnnotation = annotation
-            map.addAnnotation(annotation)
-        }
-    }
-
-    private func clearRouteVisuals() {
-        map.removeOverlays(map.overlays)
-    }
-
-    private func mapItem(for coordinate: CLLocationCoordinate2D) -> MKMapItem {
-        if #available(iOS 26.0, *) {
-            let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-            return MKMapItem(location: location, address: nil)
-        } else {
-            return MKMapItem(placemark: MKPlacemark(coordinate: coordinate))
-        }
-    }
-
-    // MARK: Location permission (optional but recommended)
     private func requestLocationPermission() {
         let hasUsageDescription = Bundle.main.object(forInfoDictionaryKey: "NSLocationWhenInUseUsageDescription") != nil
         guard hasUsageDescription else {
-            // Avoid triggering a runtime crash if the Info.plist entry is missing.
             map.showsUserLocation = false
             return
         }
@@ -335,127 +342,145 @@ final class ViewController: UIViewController {
         map.showsUserLocation = true
     }
 
-    // MARK: User taps the map – pick destination ---------------------------
-    @objc private func handleMapTap(_ gesture: UITapGestureRecognizer) {
-        let point = gesture.location(in: map)
-        let coordinate = map.convert(point, toCoordinateFrom: map)
-
-        // Remove any previous destination annotation
-        let oldDestinations = map.annotations.filter { ($0.title ?? "") == "Destination" }
-        map.removeAnnotations(oldDestinations)
-
-        let ann = MKPointAnnotation()
-        ann.coordinate = coordinate
-        ann.title = "Destination"
-        map.addAnnotation(ann)
-
-        destination = coordinate
-        instructionLabel.text = "Looks good! Confirm to start the flight."
-        updateStatus(primary: "Ready to deliver.", detail: "We'll simulate weather safety before take-off.")
-        setConfirmButtonEnabled(true)
-        setReturnButtonEnabled(false)
-        zoomMapToInclude(coordinate)
-        clearRouteVisuals()
+    private func addStoreAnnotation() {
+        let annotation = MKPointAnnotation()
+        annotation.coordinate = Constants.storeCoordinate
+        annotation.title = "Dispatch Hub"
+        map.addAnnotation(annotation)
     }
 
-    // MARK: Confirm drop-off -----------------------------------------------
-    @objc private func confirmDropoff() {
-        guard let dest = destination else { return }
-        updateStatus(primary: "Drone warming up…", detail: "Checking weather and plotting a route.")
-        setConfirmButtonEnabled(false)
-        drone.status = .flying
-        flightStartCoordinate = drone.coordinate
-
-        deliveryService.startFlight(from: drone.coordinate,
-                                    to: dest,
-                                    progressHandler: { [weak self] eta, feasible, progress in
-            guard let self = self else { return }
-            let etaText = self.etaFormatter.string(from: max(eta, 0)) ?? "--"
-            let detail = feasible ? "Estimated arrival: \(etaText)" : "Weather risk detected. We'll pause for safety."
-            let title = feasible ? "Drone is on the way 🚁" : "Flight paused"
-            self.updateStatus(primary: title, detail: detail)
-            self.updateLiveDronePosition(progress: progress, towards: dest)
-            if !feasible {
-                self.drone.status = .failed
-                self.setConfirmButtonEnabled(true)
-            }
-        }, completion: { [weak self] delivered in
-            guard let self = self, let destination = self.destination else { return }
-            self.setConfirmButtonEnabled(true)
-
-            if delivered {
-                self.drone.status = .delivered
-                self.updateStatus(primary: "Package delivered 🎉",
-                                  detail: "Animating the final leg of the route.")
-                self.animateDrone(to: destination)
-                self.setReturnButtonEnabled(true)
-            } else {
-                self.updateStatus(primary: "Unable to fly right now.",
-                                  detail: "Please try another spot or wait for better weather.")
-            }
-        })
-    }
-
-    // MARK: Drone animation along the computed route -----------------------
-    private func animateDrone(to destination: CLLocationCoordinate2D) {
-        let request = MKDirections.Request()
-        request.source = mapItem(for: drone.coordinate)
-        request.destination = mapItem(for: destination)
-
-        let directions = MKDirections(request: request)
-        directions.calculate { [weak self] response, error in
-            guard let self = self else { return }
-            guard error == nil, let route = response?.routes.first else {
-                self.updateStatus(primary: "Could not plot a route.",
-                                  detail: "Check your connection and try again.")
-                return
-            }
-
-            self.clearRouteVisuals()
-            self.map.addOverlay(route.polyline)
-            self.map.setVisibleMapRect(route.polyline.boundingMapRect,
-                                       edgePadding: UIEdgeInsets(top: 60, left: 40, bottom: 260, right: 40),
-                                       animated: true)
-
-            var coordinates = [CLLocationCoordinate2D](repeating: kCLLocationCoordinate2DInvalid,
-                                                       count: route.polyline.pointCount)
-            route.polyline.getCoordinates(&coordinates, range: NSRange(location: 0, length: route.polyline.pointCount))
-
-            var index = 0
-            Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { timer in
-                guard index < coordinates.count else {
-                    timer.invalidate()
-                    self.updateStatus(primary: "All done!", detail: "Set a new destination whenever you're ready.")
-                    return
-                }
-
-                let coordinate = coordinates[index]
-                self.drone.coordinate = coordinate
-                self.placeDroneAnnotation(at: coordinate)
-                index += 1
-            }
+    private func placeDestinationAnnotation(at coordinate: CLLocationCoordinate2D) {
+        if let destinationAnnotation {
+            destinationAnnotation.coordinate = coordinate
+        } else {
+            let annotation = MKPointAnnotation()
+            annotation.title = "Drop Zone"
+            annotation.coordinate = coordinate
+            destinationAnnotation = annotation
+            map.addAnnotation(annotation)
         }
     }
 
-    // MARK: Live interpolation during simulated flight ----------------------
-    private func updateLiveDronePosition(progress: Double, towards destination: CLLocationCoordinate2D) {
-        guard let start = flightStartCoordinate else { return }
-        let clamped = min(max(progress, 0), 1)
-        let lat = start.latitude + (destination.latitude - start.latitude) * clamped
-        let lon = start.longitude + (destination.longitude - start.longitude) * clamped
-        let coord = CLLocationCoordinate2D(latitude: lat, longitude: lon)
-        drone.coordinate = coord
-        placeDroneAnnotation(at: coord)
+    private func placeDroneAnnotation(at coordinate: CLLocationCoordinate2D) {
+        if let droneAnnotation {
+            droneAnnotation.coordinate = coordinate
+        } else {
+            let annotation = MKPointAnnotation()
+            annotation.title = "Drone"
+            annotation.coordinate = coordinate
+            droneAnnotation = annotation
+            map.addAnnotation(annotation)
+        }
     }
 
-    // MARK: Zoom controls ----------------------------------------------------
+    private func drawRoute(to coordinate: CLLocationCoordinate2D) {
+        if let routeOverlay {
+            map.removeOverlay(routeOverlay)
+        }
+
+        let route = MKGeodesicPolyline(coordinates: [drone.coordinate, coordinate], count: 2)
+        routeOverlay = route
+        map.addOverlay(route)
+    }
+
+    @objc private func handleMapTap(_ gesture: UITapGestureRecognizer) {
+        let point = gesture.location(in: map)
+        let coordinate = map.convert(point, toCoordinateFrom: map)
+        destination = coordinate
+        placeDestinationAnnotation(at: coordinate)
+        drawRoute(to: coordinate)
+        zoomMapToInclude(coordinate)
+
+        let distance = DeliveryService.distanceMeters(from: drone.coordinate, to: coordinate)
+        let eta = distance / Constants.droneSpeedMetersPerSecond
+        let etaText = etaFormatter.string(from: eta) ?? "--"
+        updateStatus(
+            primary: "Drop zone selected",
+            detail: "Ready to stream live route updates to the customer view.",
+            eta: etaText,
+            range: Self.formatDistance(distance),
+            condition: "Preflight ready"
+        )
+        progressView.progress = 0
+        setConfirmButtonEnabled(true)
+        setReturnButtonEnabled(false)
+    }
+
+    @objc private func confirmDropoff() {
+        guard let destination else { return }
+
+        setConfirmButtonEnabled(false)
+        setReturnButtonEnabled(false)
+        progressView.progress = 0
+        flightStartCoordinate = drone.coordinate
+        drone.status = .flying
+        drawRoute(to: destination)
+
+        updateStatus(
+            primary: "Preflight check running",
+            detail: "Checking simulated weather once, then streaming local route progress.",
+            condition: "Checking"
+        )
+
+        deliveryService.startFlight(
+            from: drone.coordinate,
+            to: destination,
+            progressHandler: { [weak self] eta, feasible, progress in
+                guard let self else { return }
+                let coordinate = self.interpolate(from: self.flightStartCoordinate, to: destination, progress: progress)
+                self.drone.coordinate = coordinate
+                self.placeDroneAnnotation(at: coordinate)
+                self.progressView.setProgress(Float(progress), animated: true)
+
+                let etaText = self.etaFormatter.string(from: max(eta, 0)) ?? "--"
+                self.updateStatus(
+                    primary: feasible ? "Delivery in progress" : "Delivery paused",
+                    detail: feasible ? "Live position stream is updating from the route simulator." : "Weather safety policy blocked this route.",
+                    eta: etaText,
+                    condition: feasible ? "Clear" : "Weather hold"
+                )
+            },
+            completion: { [weak self] delivered in
+                guard let self else { return }
+                self.setConfirmButtonEnabled(true)
+
+                if delivered {
+                    self.drone.status = .delivered
+                    self.progressView.setProgress(1, animated: true)
+                    self.updateStatus(
+                        primary: "Package delivered",
+                        detail: "The drone reached the selected drop zone. Return it to the dispatch hub when ready.",
+                        eta: "00:00",
+                        condition: "Delivered"
+                    )
+                    self.setReturnButtonEnabled(true)
+                } else {
+                    self.drone.status = .failed
+                    self.updateStatus(
+                        primary: "Route unavailable",
+                        detail: "Try another drop zone or wait for safer operating conditions.",
+                        condition: "Blocked"
+                    )
+                }
+            }
+        )
+    }
+
+    private func interpolate(from start: CLLocationCoordinate2D, to end: CLLocationCoordinate2D, progress: Double) -> CLLocationCoordinate2D {
+        let clamped = min(max(progress, 0), 1)
+        return CLLocationCoordinate2D(
+            latitude: start.latitude + (end.latitude - start.latitude) * clamped,
+            longitude: start.longitude + (end.longitude - start.longitude) * clamped
+        )
+    }
+
     private func setupZoomControls() {
         zoomStack.axis = .vertical
         zoomStack.spacing = 8
         zoomStack.translatesAutoresizingMaskIntoConstraints = false
         let plus = makeZoomButton(symbol: "plus")
-        plus.addTarget(self, action: #selector(zoomIn), for: .touchUpInside)
         let minus = makeZoomButton(symbol: "minus")
+        plus.addTarget(self, action: #selector(zoomIn), for: .touchUpInside)
         minus.addTarget(self, action: #selector(zoomOut), for: .touchUpInside)
         zoomStack.addArrangedSubview(plus)
         zoomStack.addArrangedSubview(minus)
@@ -470,11 +495,13 @@ final class ViewController: UIViewController {
     private func makeZoomButton(symbol: String) -> UIButton {
         let button = UIButton(type: .system)
         button.setImage(UIImage(systemName: symbol), for: .normal)
-        button.tintColor = .label
-        button.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.85)
-        button.layer.cornerRadius = 14
-        button.widthAnchor.constraint(equalToConstant: 36).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        button.tintColor = Theme.ink
+        button.backgroundColor = Theme.parchment.withAlphaComponent(0.94)
+        button.layer.cornerRadius = 12
+        button.layer.borderWidth = 1
+        button.layer.borderColor = Theme.line.withAlphaComponent(0.4).cgColor
+        button.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 38).isActive = true
         return button
     }
 
@@ -492,11 +519,58 @@ final class ViewController: UIViewController {
         map.setRegion(region, animated: true)
     }
 
-    // MARK: Return to base ---------------------------------------------------
     @objc private func returnToBase() {
+        let base = Constants.storeCoordinate
+        destination = base
         setReturnButtonEnabled(false)
-        updateStatus(primary: "Returning to base…", detail: "Routing back to the store.")
-        animateDrone(to: Constants.storeCoordinate)
-        drone.status = .idle
+        setConfirmButtonEnabled(false)
+        flightStartCoordinate = drone.coordinate
+        drawRoute(to: base)
+
+        updateStatus(
+            primary: "Returning to dispatch hub",
+            detail: "Streaming return route position updates.",
+            condition: "Returning"
+        )
+
+        deliveryService.startFlight(
+            from: drone.coordinate,
+            to: base,
+            progressHandler: { [weak self] eta, _, progress in
+                guard let self else { return }
+                let coordinate = self.interpolate(from: self.flightStartCoordinate, to: base, progress: progress)
+                self.drone.coordinate = coordinate
+                self.placeDroneAnnotation(at: coordinate)
+                self.progressView.setProgress(Float(progress), animated: true)
+                let etaText = self.etaFormatter.string(from: max(eta, 0)) ?? "--"
+                self.updateStatus(
+                    primary: "Returning to dispatch hub",
+                    detail: "Drone is clearing the delivery zone.",
+                    eta: etaText,
+                    range: Self.formatDistance(DeliveryService.distanceMeters(from: coordinate, to: base)),
+                    condition: "Returning"
+                )
+            },
+            completion: { [weak self] _ in
+                guard let self else { return }
+                self.drone.status = .idle
+                self.progressView.progress = 0
+                self.updateStatus(
+                    primary: "Drone ready",
+                    detail: "Tap a new drop zone to begin another live delivery update.",
+                    eta: "--",
+                    range: "At hub",
+                    condition: "Ready"
+                )
+                self.setConfirmButtonEnabled(self.destination != nil)
+            }
+        )
+    }
+
+    private static func formatDistance(_ meters: CLLocationDistance) -> String {
+        if meters >= 1_000 {
+            return String(format: "%.1f km", meters / 1_000)
+        }
+        return String(format: "%.0f m", meters)
     }
 }
